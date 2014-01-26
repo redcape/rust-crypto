@@ -308,76 +308,92 @@ pub fn cbc_decryptor<X: PaddingProcessor + Send>(
     }
 }
 
-/// Get the best implementation of a Ctr
-#[cfg(target_arch = "x86")]
-#[cfg(target_arch = "x86_64")]
-pub fn ctr(
-        key_size: KeySize,
-        key: &[u8],
-        iv: &[u8]) -> ~SynchronousStreamCipher {
-    if util::supports_aesni() {
-        match key_size {
-            KeySize128 => {
-                let aes_dec = aesni::AesNi128Encryptor::new(key);
-                let dec = ~CtrMode::new(aes_dec, iv.to_owned());
-                dec as ~SynchronousStreamCipher
-            }
-            KeySize192 => {
-                let aes_dec = aesni::AesNi192Encryptor::new(key);
-                let dec = ~CtrMode::new(aes_dec, iv.to_owned());
-                dec as ~SynchronousStreamCipher
-            }
-            KeySize256 => {
-                let aes_dec = aesni::AesNi256Encryptor::new(key);
-                let dec = ~CtrMode::new(aes_dec, iv.to_owned());
-                dec as ~SynchronousStreamCipher
+macro_rules! x86_ctr_func( ($fnname:ident, $result:ident) =>
+    (
+        /// Get the best implementation of a Ctr
+        #[cfg(target_arch = "x86")]
+        #[cfg(target_arch = "x86_64")]
+        pub fn $fnname(
+                key_size: KeySize,
+                key: &[u8],
+                iv: &[u8]) -> ~$result {
+            if util::supports_aesni() {
+                match key_size {
+                    KeySize128 => {
+                        let aes_dec = aesni::AesNi128Encryptor::new(key);
+                        let dec = ~CtrMode::new(aes_dec, iv.to_owned());
+                        dec as ~$result
+                    }
+                    KeySize192 => {
+                        let aes_dec = aesni::AesNi192Encryptor::new(key);
+                        let dec = ~CtrMode::new(aes_dec, iv.to_owned());
+                        dec as ~$result
+                    }
+                    KeySize256 => {
+                        let aes_dec = aesni::AesNi256Encryptor::new(key);
+                        let dec = ~CtrMode::new(aes_dec, iv.to_owned());
+                        dec as ~$result
+                    }
+                }
+            } else {
+                match key_size {
+                    KeySize128 => {
+                        let aes_dec = aessafe::AesSafe128EncryptorX8::new(key);
+                        let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
+                        dec as ~$result
+                    }
+                    KeySize192 => {
+                        let aes_dec = aessafe::AesSafe192EncryptorX8::new(key);
+                        let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
+                        dec as ~$result
+                    }
+                    KeySize256 => {
+                        let aes_dec = aessafe::AesSafe256EncryptorX8::new(key);
+                        let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
+                        dec as ~$result
+                    }
+                }
             }
         }
-    } else {
-        match key_size {
-            KeySize128 => {
-                let aes_dec = aessafe::AesSafe128EncryptorX8::new(key);
-                let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
-                dec as ~SynchronousStreamCipher
-            }
-            KeySize192 => {
-                let aes_dec = aessafe::AesSafe192EncryptorX8::new(key);
-                let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
-                dec as ~SynchronousStreamCipher
-            }
-            KeySize256 => {
-                let aes_dec = aessafe::AesSafe256EncryptorX8::new(key);
-                let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
-                dec as ~SynchronousStreamCipher
-            }
-        }
-    }
-}
+    )
+)
 
-/// Get the best implementation of a Ctr
-#[cfg(not(target_arch = "x86", target_arch = "x86_64"))]
-pub fn ctr(
-        key_size: KeySize,
-        key: &[u8],
-        iv: &[u8]) -> ~SynchronousStreamCipher {
-    match key_size {
-        KeySize128 => {
-            let aes_dec = aessafe::AesSafe128Encryptor::new(key);
-            let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
-            dec as ~SynchronousStreamCipher
+x86_ctr_func!(ctr, SynchronousStreamCipher)
+x86_ctr_func!(ctr_enc, Encryptor)
+x86_ctr_func!(ctr_dec, Decryptor)
+
+macro_rules! gen_ctr_func( ($fnname:ident, $result:ident) =>
+    (
+        /// Get the best implementation of a Ctr
+        #[cfg(not(target_arch = "x86", target_arch = "x86_64"))]
+        pub fn $fnname(
+                key_size: KeySize,
+                key: &[u8],
+                iv: &[u8]) -> ~$result {
+            match key_size {
+                KeySize128 => {
+                    let aes_dec = aessafe::AesSafe128Encryptor::new(key);
+                    let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
+                    dec as ~$result
+                }
+                KeySize192 => {
+                    let aes_dec = aessafe::AesSafe192Encryptor::new(key);
+                    let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
+                    dec as ~$result
+                }
+                KeySize256 => {
+                    let aes_dec = aessafe::AesSafe256Encryptor::new(key);
+                    let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
+                    dec as ~$result
+                }
+            }
         }
-        KeySize192 => {
-            let aes_dec = aessafe::AesSafe192Encryptor::new(key);
-            let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
-            dec as ~SynchronousStreamCipher
-        }
-        KeySize256 => {
-            let aes_dec = aessafe::AesSafe256Encryptor::new(key);
-            let dec = ~CtrModeX8::new(aes_dec, iv.to_owned());
-            dec as ~SynchronousStreamCipher
-        }
-    }
-}
+    )
+)
+
+gen_ctr_func!(ctr, SynchronousStreamCipher)
+gen_ctr_func!(ctr_enc, Encryptor)
+gen_ctr_func!(ctr_dec, Decryptor)
 
 #[cfg(test)]
 mod test {
