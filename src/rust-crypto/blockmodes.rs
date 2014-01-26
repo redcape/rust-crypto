@@ -405,45 +405,53 @@ impl <P: BlockProcessor, X: PaddingProcessor> BlockEngine<P, X> {
     }
 }
 
-/// No padding mode for ECB and CBC encryption
-pub struct NoPadding;
+/// Standard padding modes
+pub enum StandardPadding {
+    /// No padding mode for ECB and CBC encryption
+    NoPadding,
 
-impl PaddingProcessor for NoPadding {
-    fn pad_input<W: WriteBuffer>(&mut self, _: &mut W) { }
-    fn strip_output<R: ReadBuffer>(&mut self, _: &mut R) -> bool { true }
+    /// PKCS padding mode for ECB and CBC encryption
+    PkcsPadding
 }
 
-/// PKCS padding mode for ECB and CBC encryption
-pub struct PkcsPadding;
-
-// This class implements both encryption padding, where padding is added, and decryption padding,
+// This enum implements both encryption padding, where padding is added, and decryption padding,
 // where padding is stripped. Since BlockEngine doesn't know if its an Encryption or Decryption
-// operation, it will call both methods if given a chance. So, this class can't be passed directly
+// operation, it will call both methods if given a chance. So, this enum can't be passed directly
 // to BlockEngine. Instead, it must be wrapped with EncPadding or DecPadding which will ensure that
-// only the propper methods are called. The client of the library, however, doesn't have to
-// distinguish encryption padding handling from decryption padding handline, which is the whole
+// only the propper methods are called. However, the client of the library doesn't have to
+// distinguish encryption padding handling from decryption padding handling, which is the whole
 // point.
-impl PaddingProcessor for PkcsPadding {
+impl PaddingProcessor for StandardPadding {
     fn pad_input<W: WriteBuffer>(&mut self, input_buffer: &mut W) {
-        let rem = input_buffer.remaining();
-        assert!(rem != 0 && rem <= 255);
-        for v in input_buffer.take_remaining().mut_iter() {
-            *v = rem as u8;
-        }
-    }
-    fn strip_output<R: ReadBuffer>(&mut self, output_buffer: &mut R) -> bool {
-        let last_byte: u8;
-        {
-            let data = output_buffer.peek_remaining();
-            last_byte = *data.last().unwrap();
-            for &x in data.iter().rev().take(last_byte as uint) {
-                if x != last_byte {
-                    return false;
+        match *self {
+            NoPadding => { }
+            PkcsPadding => {
+                let rem = input_buffer.remaining();
+                assert!(rem != 0 && rem <= 255);
+                for v in input_buffer.take_remaining().mut_iter() {
+                    *v = rem as u8;
                 }
             }
         }
-        output_buffer.truncate(last_byte as uint);
-        true
+    }
+    fn strip_output<R: ReadBuffer>(&mut self, output_buffer: &mut R) -> bool {
+        match *self {
+            NoPadding => { true }
+            PkcsPadding => {
+                let last_byte: u8;
+                {
+                    let data = output_buffer.peek_remaining();
+                    last_byte = *data.last().unwrap();
+                    for &x in data.iter().rev().take(last_byte as uint) {
+                        if x != last_byte {
+                            return false;
+                        }
+                    }
+                }
+                output_buffer.truncate(last_byte as uint);
+                true
+            }
+        }
     }
 }
 
