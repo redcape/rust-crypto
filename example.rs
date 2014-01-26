@@ -11,9 +11,13 @@ extern mod extra;
 
 use crypto::aes;
 use crypto::blockmodes;
-use crypto::buffer;
+use crypto::buffer::{BufferUnderflow, BufferOverflow, ReadBuffer, RefReadBuffer, RefWriteBuffer,
+    WriteBuffer};
+use crypto::hmac::Hmac;
 use crypto::rc4;
+use crypto::mac::{Mac, MacResult};
 use crypto::scrypt;
+use crypto::sha2::Sha256;
 use crypto::symmetriccipher;
 
 use extra::base64;
@@ -125,16 +129,17 @@ fn get_encryptor(
     }
 }
 
-fn encrypt(
+fn encrypt<R: Reader, W: Writer>(
         pass: &str,
         algo_name: &str,
-        input_file: &mut io::File,
-        output_file: &mut io::File) -> Result<(), &'static str> {
+        input: &mut R,
+        output: &mut W) -> Result<(), &'static str> {
     let enc_salt = os_rand(16);
     let mac_salt = os_rand(16);
-    let (encryptor, iv) = try!(get_encryptor(algo_name, pass, enc_salt));
+    let (mut enc, iv) = try!(get_encryptor(algo_name, pass, enc_salt));
 
     // Format:
+    // Field         - Length              - Description
     // MAGIC         - 8 bytes             - "RUSTCRPT"
     // VERSION       - U32                 - Only supports version 1 right now
     // HEADER_LEN    - U32                 - Length of header (up to ENC_DATA_LEN, including MAGIC and VERSION)
@@ -149,19 +154,93 @@ fn encrypt(
     // MAC_SALT      - ENC_SALT_LEN bytes  - encryption salt value
     // IV_LEN        - U32                 - length of next field
     // IV            - IV_LEN bytes        - IV
-    // ENC_DATA_LEN  - U32
-    // DATA          - ENC_DATA_LEN bytes
-    // MAC_LEN       - length of next field
-    // MAC           - MAC_LEN bytes
+    // DATA          - Up to MAC
+    // MAC           - 32 bytes
+
+    let iv_len = match iv {
+        Some(ref iv) => iv.len(),
+        None => 0
+    };
+
+    output.write_str("RUSTCRPT");
+    output.write_be_u32(1);
+    output.write_be_u32((34 + algo_name.len() + enc_salt.len() + mac_salt.len() + iv_len) as u32);
+
+    output.write_be_u32(algo_name.len() as u32);
+    output.write_str(algo_name);
+
+    output.write_u8(10);
+    output.write_be_u32(1);
+    output.write_be_u32(8);
+
+    output.write_be_u32(enc_salt.len() as u32);
+    output.write(enc_salt);
+
+    output.write_be_u32(mac_salt.len() as u32);
+    output.write(mac_salt);
+
+    match iv {
+        Some(ref iv) => {
+            output.write_be_u32(iv.len() as u32);
+            output.write(iv.as_slice());
+        }
+        None => output.write_be_u32(0)
+    }
+
+    let mac_key = gen_key(pass, mac_salt, 64);
+    let sha256 = Sha256::new();
+    let mut mac = Hmac::new(sha256, mac_key);
+
+    let mut buff_in = [0u8, ..4096];
+    let mut buff_out = [0u8, ..4096];
+    let mut wout = RefWriteBuffer::new(buff_out);
+    let mut done = false;
+    while !done {
+        match input.read(buff_in) {
+            Some(cnt) => {
+                mac.input(buff_in.slice_to(cnt));
+
+                let mut rin = RefReadBuffer::new(buff_in.slice_to(cnt));
+
+                loop {
+                    match enc.encrypt(&mut rin, &mut wout, false) {
+                        Ok(BufferUnderflow) => {
+                            // TODO - its way to easy to not call take_read_buffer() on this
+                            // which results in an infinite loop. Rename that method?
+                            output.write(wout.take_read_buffer().take_remaining());
+                            break;
+                        }
+                        Ok(BufferOverflow) => output.write(wout.take_read_buffer().take_remaining()),
+                        Err(_) => return Err("Encryption failed")
+                    }
+                }
+            }
+            None => {
+                loop {
+                    match enc.encrypt(&mut RefReadBuffer::new(&[]), &mut wout, true) {
+                        Ok(BufferUnderflow) => {
+                            output.write(wout.take_read_buffer().take_remaining());
+                            done = true;
+                            break;
+                        }
+                        Ok(BufferOverflow) => output.write(wout.take_read_buffer().take_remaining()),
+                        Err(_) => return Err("Encryption failed")
+                    }
+                }
+            }
+        }
+    }
+
+    output.write(mac.result().code());
 
     Ok(())
 }
 
-fn decrypt(
+fn decrypt<R: Reader, W: Writer>(
         pass: &str,
         algo_name: &str,
-        input_file: &mut io::File,
-        output_file: &mut io::File) -> Result<(), &'static str> {
+        input: &mut R,
+        output: &mut W) -> Result<(), &'static str> {
 
     Ok(())
 }
@@ -182,7 +261,11 @@ fn main() {
         getopts::groups::optopt("o", "out", "Output file", ""),
         getopts::groups::optflag("e", "encrypt", "Encrypt (Default)"),
         getopts::groups::optflag("d", "decrypt", "Decrypt"),
-        getopts::groups::optopt("a", "algorithm", "Algorithm to use (Default: AES/128/CBC)", "")
+        getopts::groups::optopt(
+            "a",
+            "algorithm",
+            "Algorithm to use (Default: AES/128/CBC/PkcsPadding)",
+            "")
     ];
 
     let matches = match getopts::groups::getopts(args.tail(), opts) {
@@ -226,7 +309,7 @@ fn main() {
 
     let algo_name = match matches.opt_str("a") {
         Some(x) => x,
-        None => ~"AES128/CBC"
+        None => ~"AES/128/CBC/PkcsPadding"
     };
 
     io::stdout().write(bytes!("Please type the password: "));
