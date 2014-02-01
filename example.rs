@@ -58,8 +58,8 @@ use std::vec;
 
 // TODO - Would this fit in better as a utility class in rust-crypto itself?
 struct MacWriter<'a, W, M> {
-    priv writer: &'a mut W,
-    priv mac: &'a mut M
+    writer: &'a mut W,
+    mac: &'a mut M
 }
 
 impl <'a, W: Writer, M: Mac> MacWriter<'a, W, M> {
