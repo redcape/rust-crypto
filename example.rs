@@ -279,7 +279,7 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
     //    32 bytes.
     // 2. Read into buff_in_2 until it is full. Once its full, process buff_in_1. Then, swap
     //    buff_in_1 and buff_in_2. Then, repeat this step. Once we get to EOF, we know that the Mac
-    //    must either be full in buff_in_1 (up until the 2nd), split across the two, or fully in
+    //    must either be fully in buff_in_1 (right and the end), split across the two, or fully in
     //    buff_in_2. Process everything except the Mac and then return the Mac value.
 
     let mut buff_in_1 = &mut [0u8, ..4096];
@@ -307,7 +307,7 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
     }
 
     // Decrypt the entire input buffer and write it to the output
-    let decrypt_full_input = |buff_in: &[u8], eof: bool | -> Result<(), &'static str> {
+    let decrypt_full_input = |buff_in: &[u8], eof: bool| -> Result<(), &'static str> {
         let mut bin = RefReadBuffer::new(buff_in);
         loop {
             let mut wout = RefWriteBuffer::new(buff_out);
@@ -322,6 +322,7 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
         }
     };
 
+    // Step 1
     match read_all(input, buff_in_1.as_mut_slice()) {
         cnt => {
             if cnt < 32 {
@@ -336,12 +337,18 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
         }
     }
 
+    // Step 2
     loop {
         let cnt = read_all(input, buff_in_2.as_mut_slice());
-        if cnt < buff_in_2.len() {
+        if cnt == buff_in_2.len() {
+            // Not EOF - Process buff_in_1
+            mac.input(buff_in_1.as_slice());
+            try!(decrypt_full_input(buff_in_1.as_slice(), false));
+            std::util::swap(&mut buff_in_1, &mut buff_in_2);
+        } else {
             if cnt < 32 {
-                // The Mac is split across the end of buff_in_1 and the beggining of
-                // buff_in_2
+                // The Mac is either fully in buff_in_1, right up to the end, or split across the
+                // end of buff_in_1 and the beggining of buff_in_2
                 let crypt_len = buff_in_1.len() - 32 + cnt;
                 mac.input(buff_in_1.slice_to(crypt_len));
                 try!(decrypt_full_input(buff_in_1.slice_to(crypt_len), true));
@@ -357,11 +364,6 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
                 try!(decrypt_full_input(buff_in_2.slice_to(cnt - 32), true));
                 return Ok(MacResult::new(buff_in_2.slice(cnt - 32, cnt)));
             }
-        } else {
-            // Process buff_in_1
-            mac.input(buff_in_1.as_slice());
-            try!(decrypt_full_input(buff_in_1.as_slice(), false));
-            std::util::swap(&mut buff_in_1, &mut buff_in_2);
         }
     }
 }
@@ -480,7 +482,7 @@ fn decrypt<R: Reader, W: Writer>(
     let mac_salt = read_field();
     let iv = read_field();
 
-    // Its possible that their are more header fields, but we can ignore them. If for some reason we
+    // Its possible that there are more header fields, but we can ignore them. If for some reason we
     // can't ignore them, then the VERSION field in the header should have been incremented.
 
     let mac_key = gen_key(&scrypt_params, pass, mac_salt, 64);
@@ -490,19 +492,16 @@ fn decrypt<R: Reader, W: Writer>(
 
     let mut dec = try!(get_decryptor(algo_name, pass, enc_salt, &scrypt_params, iv));
 
-    // The return value of do_decrypt() is the Mac value from the message we are decrypting, not the
+    // The return value of do_decrypt() is the Mac value saved in message we are decrypting, not the
     // calculated Mac value.
     let mac_code = try!(do_decrypt(input, output, &mut dec, &mut mac));
 
+    // MacResult's equals method is implemented to be a fixed time comparison
     if mac_code == mac.result() {
         Ok(())
     } else {
         Err("Mac code not valid")
     }
-}
-
-fn print_usage(opts: &[getopts::groups::OptGroup]) {
-    println!("{}", getopts::groups::usage("A simple encryption utility.", opts));
 }
 
 fn main() {
@@ -524,6 +523,10 @@ fn main() {
             "")
     ];
 
+    let print_usage = || {
+        println!("{}", getopts::groups::usage("A simple encryption utility.", opts));
+    };
+
     let matches = match getopts::groups::getopts(args.tail(), opts) {
         Ok(m) => m,
         Err(f) => {
@@ -533,7 +536,7 @@ fn main() {
     };
 
     if matches.opt_present("h") {
-        print_usage(opts);
+        print_usage();
         os::set_exit_status(0);
         return;
     }
@@ -543,7 +546,7 @@ fn main() {
     let ambiguous_mode = matches.opt_present("e") && matches.opt_present("d");
     let decrypt_and_algo = matches.opt_present("d") && matches.opt_present("a");
     if !files_specified || ambiguous_mode || decrypt_and_algo {
-        print_usage(opts);
+        print_usage();
         return;
     }
 
