@@ -596,3 +596,56 @@ fn main() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufReader, BufWriter};
+
+    use super::{encrypt, decrypt};
+
+    #[test]
+    fn do_tests() {
+        let mut buff_plain = [0u8, ..16384];
+        let mut buff_cipher = [0u8, ..17000];
+        let mut buff_plain_2 = [0u8, ..16384];
+
+        for (i, x) in buff_plain.mut_iter().enumerate() {
+            *x = i as u8;
+        }
+
+        for cnt in range(0, buff_plain.len()) {
+            let cipher_size: uint;
+            {
+                let mut plain_reader = BufReader::new(buff_plain.slice_to(cnt));
+                let mut cipher_writer = BufWriter::new(buff_cipher);
+                let r = encrypt(
+                    "asdlfjjdslds",
+                    "AES/128/CBC/PkcsPadding",
+                    &mut plain_reader,
+                    &mut cipher_writer);
+                match r {
+                    Ok(_) => {},
+                    Err(_) => fail!()
+                }
+                cipher_size = cipher_writer.tell() as uint;
+            }
+
+            {
+                let mut cipher_reader = BufReader::new(buff_cipher.slice_to(cipher_size));
+                let mut plain_writer = BufWriter::new(buff_plain_2);
+                let r = decrypt(
+                    "asdlfjjdslds",
+                    &mut cipher_reader,
+                    &mut plain_writer);
+                match r {
+                    Ok(_) => {},
+                    Err(_) => fail!()
+                }
+            }
+
+            assert!(buff_plain.slice_to(cnt) == buff_plain_2.slice_to(cnt));
+
+            println!("Count: {}", cnt);
+        }
+    }
+}
