@@ -16,6 +16,7 @@ bin
 *.rlib
 *.so
 *.o
+*.rlib
 
 # Output files
 rust-crypto-test
