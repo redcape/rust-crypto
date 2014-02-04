@@ -49,12 +49,21 @@ use crypto::symmetriccipher::{Decryptor, Encryptor};
 use extra::getopts;
 
 use std::io;
-use std::io::{BufferedReader, BufReader, File};
+use std::io::{BufferedReader, BufReader, EndOfFile, File, IoError, IoResult};
 use std::io::fs;
 use std::os;
 use std::rand::{OSRng, Rng};
 use std::str;
 use std::vec;
+
+macro_rules! io( ($x:expr) =>
+    (
+        match $x {
+            Ok(y) => y,
+            Err(e) => return Err(e.to_str())
+        }
+    )
+)
 
 // TODO - Would this fit in better as a utility class in rust-crypto itself?
 struct MacWriter<'a, W, M> {
@@ -72,20 +81,11 @@ impl <'a, W: Writer, M: Mac> MacWriter<'a, W, M> {
 }
 
 impl <'a, W: Writer, M: Mac> Writer for MacWriter<'a, W, M> {
-    fn write(&mut self, buff: &[u8]) {
+    fn write(&mut self, buff: &[u8]) -> IoResult<()> {
         self.mac.input(buff);
-        self.writer.write(buff);
+        self.writer.write(buff)
     }
 }
-
-macro_rules! try( ($x:expr) =>
-    (
-        match $x {
-            Ok(y) => y,
-            Err(e) => return Err(e)
-        }
-    )
-)
 
 fn os_rand(size: uint) -> ~[u8] {
     let mut rng = OSRng::new();
@@ -99,40 +99,40 @@ fn gen_key(scrypt_params: &ScryptParams, pass: &str, salt: &[u8], size: uint) ->
     result
 }
 
-fn parse_aes_key_size(ks: Option<&str>) -> Result<(KeySize, uint), &'static str> {
+fn parse_aes_key_size(ks: Option<&str>) -> Result<(KeySize, uint), ~str> {
     match ks {
         Some("128") => Ok((KeySize128, 16)),
         Some("192") => Ok((KeySize192, 24)),
         Some("256") => Ok((KeySize256, 32)),
-        _ => Err("Invalid or missing key size")
+        _ => Err(~"Invalid or missing key size")
     }
 }
 
-fn parse_rc4_key_size(ks: Option<&str>) -> Result<uint, &'static str> {
+fn parse_rc4_key_size(ks: Option<&str>) -> Result<uint, ~str> {
     match ks {
         Some(key_size_str) => {
             match from_str::<uint>(key_size_str) {
                 Some(x) => if x < 40 {
-                    Err("Key size must be at least 40")
+                    Err(~"Key size must be at least 40")
                 } else if x > 2048 {
-                    Err("Key size must be no more than 2048")
+                    Err(~"Key size must be no more than 2048")
                 } else if x % 8 != 0 {
-                    Err("Key size must be a multiple of 8 bits")
+                    Err(~"Key size must be a multiple of 8 bits")
                 } else {
                     Ok(x / 8)
                 },
-                None => Err("Invalid key size")
+                None => Err(~"Invalid key size")
             }
         }
-        None => Err("Key size not specified")
+        None => Err(~"Key size not specified")
     }
 }
 
-fn parse_padding(pad: Option<&str>) -> Result<StandardPadding, &'static str> {
+fn parse_padding(pad: Option<&str>) -> Result<StandardPadding, ~str> {
     match pad {
         Some("NoPadding") => Ok(NoPadding),
         Some("PkcsPadding") => Ok(PkcsPadding),
-        _ => Err("Invalid padding")
+        _ => Err(~"Invalid padding")
     }
 }
 
@@ -141,19 +141,19 @@ fn get_encryptor(
         algo_name: &str,
         pass: &str,
         salt: &[u8],
-        scrypt_params: &ScryptParams) -> Result<(~Encryptor, Option<~[u8]>), &'static str> {
+        scrypt_params: &ScryptParams) -> Result<(~Encryptor, Option<~[u8]>), ~str> {
     let mut x = algo_name.split('/');
     match x.next() {
         Some("AES") => {
-            let (key_size, ks) = try!(parse_aes_key_size(x.next()));
+            let (key_size, ks) = if_ok!(parse_aes_key_size(x.next()));
             match x.next() {
                 Some("ECB") => {
-                    let padding = try!(parse_padding(x.next()));
+                    let padding = if_ok!(parse_padding(x.next()));
                     let key = gen_key(scrypt_params, pass, salt, ks);
                     Ok((aes::ecb_encryptor(key_size, key, padding), None))
                 }
                 Some("CBC") => {
-                    let padding = try!(parse_padding(x.next()));
+                    let padding = if_ok!(parse_padding(x.next()));
                     let iv = os_rand(16);
                     let key = gen_key(scrypt_params, pass, salt, ks);
                     Ok((aes::cbc_encryptor(key_size, key, iv, padding), Some(iv)))
@@ -163,18 +163,18 @@ fn get_encryptor(
                     let key = gen_key(scrypt_params, pass, salt, ks);
                     Ok((aes::ctr_enc(key_size, key, iv), Some(iv)))
                 }
-                _ => Err("Invalid mode")
+                _ => Err(~"Invalid mode")
             }
         }
         Some("RC4") => {
-            let ks = try!(parse_rc4_key_size(x.next()));
+            let ks = if_ok!(parse_rc4_key_size(x.next()));
             if x.next().is_some() {
-                return Err("Invalid RC4 specification");
+                return Err(~"Invalid RC4 specification");
             }
             let key = gen_key(scrypt_params, pass, salt, ks);
             Ok((~Rc4::new(key) as ~Encryptor, None))
         }
-        _ => Err("Invalid cipher")
+        _ => Err(~"Invalid cipher")
     }
 }
 
@@ -184,19 +184,19 @@ fn get_decryptor(
         pass: &str,
         salt: &[u8],
         scrypt_params: &ScryptParams,
-        iv: &[u8]) -> Result<~Decryptor, &'static str> {
+        iv: &[u8]) -> Result<~Decryptor, ~str> {
     let mut x = algo_name.split('/');
     match x.next() {
         Some("AES") => {
-            let (key_size, ks) = try!(parse_aes_key_size(x.next()));
+            let (key_size, ks) = if_ok!(parse_aes_key_size(x.next()));
             match x.next() {
                 Some("ECB") => {
-                    let padding = try!(parse_padding(x.next()));
+                    let padding = if_ok!(parse_padding(x.next()));
                     let key = gen_key(scrypt_params, pass, salt, ks);
                     Ok(aes::ecb_decryptor(key_size, key, padding))
                 }
                 Some("CBC") => {
-                    let padding = try!(parse_padding(x.next()));
+                    let padding = if_ok!(parse_padding(x.next()));
                     let key = gen_key(scrypt_params, pass, salt, ks);
                     Ok(aes::cbc_decryptor(key_size, key, iv, padding))
                 }
@@ -204,18 +204,18 @@ fn get_decryptor(
                     let key = gen_key(scrypt_params, pass, salt, ks);
                     Ok(aes::ctr_dec(key_size, key, iv))
                 }
-                _ => Err("Invalid mode")
+                _ => Err(~"Invalid mode")
             }
         }
         Some("RC4") => {
-            let ks = try!(parse_rc4_key_size(x.next()));
+            let ks = if_ok!(parse_rc4_key_size(x.next()));
             if x.next().is_some() {
-                return Err("Invalid RC4 specification");
+                return Err(~"Invalid RC4 specification");
             }
             let key = gen_key(scrypt_params, pass, salt, ks);
             Ok(~Rc4::new(key) as ~Decryptor)
         }
-        _ => Err("Invalid cipher")
+        _ => Err(~"Invalid cipher")
     }
 }
 
@@ -225,40 +225,40 @@ fn get_decryptor(
 fn do_encrypt<R: Reader, W: Writer>(
         input: &mut R,
         output: &mut W,
-        mut enc: ~Encryptor) -> Result<(), &'static str> {
+        mut enc: ~Encryptor) -> Result<(), ~str> {
     let mut buff_in = [0u8, ..4096];
     let mut buff_out = [0u8, ..4096];
     let mut wout = RefWriteBuffer::new(buff_out);
     loop {
         match input.read(buff_in) {
-            Some(cnt) => {
+            Ok(cnt) => {
                 let mut rin = RefReadBuffer::new(buff_in.slice_to(cnt));
-
                 loop {
                     match enc.encrypt(&mut rin, &mut wout, false) {
                         Ok(BufferUnderflow) => {
                             // TODO - its way too easy to not call take_read_buffer() on this
                             // which results in an infinite loop. Rename that method?
-                            output.write(wout.take_read_buffer().take_remaining());
+                            io!(output.write(wout.take_read_buffer().take_remaining()));
                             break;
                         }
-                        Ok(BufferOverflow) => output.write(wout.take_read_buffer().take_remaining()),
-                        Err(_) => return Err("Encryption failed")
+                        Ok(BufferOverflow) => io!(output.write(wout.take_read_buffer().take_remaining())),
+                        Err(_) => return Err(~"Encryption failed")
                     }
                 }
             }
-            None => {
+            Err(IoError { kind: EndOfFile, .. }) => {
                 loop {
                     match enc.encrypt(&mut RefReadBuffer::new(&[]), &mut wout, true) {
                         Ok(BufferUnderflow) => {
-                            output.write(wout.take_read_buffer().take_remaining());
+                            io!(output.write(wout.take_read_buffer().take_remaining()));
                             return Ok(());
                         }
-                        Ok(BufferOverflow) => output.write(wout.take_read_buffer().take_remaining()),
-                        Err(_) => return Err("Encryption failed")
+                        Ok(BufferOverflow) => io!(output.write(wout.take_read_buffer().take_remaining())),
+                        Err(_) => return Err(~"Encryption failed")
                     }
                 }
             }
+            Err(_) => return Err(~"Io Error")
         }
     }
 }
@@ -270,7 +270,7 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
         input: &mut R,
         output: &mut W,
         dec: &mut ~Decryptor,
-        mac: &mut M) -> Result<MacResult, &'static str> {
+        mac: &mut M) -> Result<MacResult, ~str> {
     // We need to process all remaining input, except for the last 32 bytes which represent the
     // Mac code.
     // Algorithm:
@@ -290,60 +290,62 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
     assert!(buff_in_1.len() > 32);
 
     // Keep reading until the specified vector is full or until EOF, then return the number of bytes
-    // actually read.
-    fn read_all<R: Reader>(reader: &mut R, buff: &mut [u8]) -> uint {
+    // actually read. Return's Ok() on EOF.
+    fn read_all<R: Reader>(reader: &mut R, buff: &mut [u8]) -> IoResult<uint> {
         let mut pos = 0;
         loop {
             match reader.read(buff.mut_slice_from(pos)) {
-                Some(cnt) => {
+                Ok(cnt) => {
                     pos += cnt;
                     if pos == buff.len() {
-                        return pos;
+                        return Ok(pos);
                     }
                 }
-                None => return pos
+                Err(IoError { kind: EndOfFile, .. }) => return Ok(pos),
+                Err(io_error) => return Err(io_error)
             }
         }
     }
 
     // Decrypt the entire input buffer and write it to the output
-    let decrypt_full_input = |buff_in: &[u8], eof: bool| -> Result<(), &'static str> {
+    let decrypt_full_input = |buff_in: &[u8], eof: bool| -> Result<(), ~str> {
         let mut bin = RefReadBuffer::new(buff_in);
         loop {
             let mut wout = RefWriteBuffer::new(buff_out);
             match dec.decrypt(&mut bin, &mut wout, eof) {
                 Ok(BufferUnderflow) => {
-                    output.write(wout.take_read_buffer().take_remaining());
+                    io!(output.write(wout.take_read_buffer().take_remaining()));
                     return Ok(());
                 }
-                Ok(BufferOverflow) => output.write(wout.take_read_buffer().take_remaining()),
-                Err(_) => return Err("Decryption error")
+                Ok(BufferOverflow) => io!(output.write(wout.take_read_buffer().take_remaining())),
+                Err(_) => return Err(~"Decryption error")
             }
         }
     };
 
     // Step 1
     match read_all(input, buff_in_1.as_mut_slice()) {
-        cnt => {
+        Ok(cnt) => {
             if cnt < 32 {
-                return Err("EOF");
+                return Err(~"EOF");
             } else if cnt < buff_in_1.len() {
                 mac.input(buff_in_1.slice_to(cnt - 32));
-                try!(decrypt_full_input(buff_in_1.slice_to(cnt - 32), true));
+                io!(decrypt_full_input(buff_in_1.slice_to(cnt - 32), true));
                 return Ok(MacResult::new(buff_in_1.slice(cnt - 32, cnt)));
             } else {
                 // nothing to do. Go on to processing buff_in_2
             }
         }
+        Err(io_err) => return Err(io_err.to_str())
     }
 
     // Step 2
     loop {
-        let cnt = read_all(input, buff_in_2.as_mut_slice());
+        let cnt = io!(read_all(input, buff_in_2.as_mut_slice()));
         if cnt == buff_in_2.len() {
             // Not EOF - Process buff_in_1
             mac.input(buff_in_1.as_slice());
-            try!(decrypt_full_input(buff_in_1.as_slice(), false));
+            if_ok!(decrypt_full_input(buff_in_1.as_slice(), false));
             std::util::swap(&mut buff_in_1, &mut buff_in_2);
         } else {
             if cnt < 32 {
@@ -351,7 +353,7 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
                 // end of buff_in_1 and the beggining of buff_in_2
                 let crypt_len = buff_in_1.len() - 32 + cnt;
                 mac.input(buff_in_1.slice_to(crypt_len));
-                try!(decrypt_full_input(buff_in_1.slice_to(crypt_len), true));
+                if_ok!(decrypt_full_input(buff_in_1.slice_to(crypt_len), true));
                 let mut code = ~[];
                 code.push_all(buff_in_1.slice_from(crypt_len));
                 code.push_all(buff_in_2.slice_to(cnt));
@@ -360,8 +362,8 @@ fn do_decrypt<R: Reader, W: Writer, M: Mac>(
                 // The Mac is completely contained in buff_in_2
                 mac.input(buff_in_1.as_slice());
                 mac.input(buff_in_2.slice_to(cnt - 32));
-                try!(decrypt_full_input(buff_in_1.as_slice(), false));
-                try!(decrypt_full_input(buff_in_2.slice_to(cnt - 32), true));
+                if_ok!(decrypt_full_input(buff_in_1.as_slice(), false));
+                if_ok!(decrypt_full_input(buff_in_2.slice_to(cnt - 32), true));
                 return Ok(MacResult::new(buff_in_2.slice(cnt - 32, cnt)));
             }
         }
@@ -372,7 +374,7 @@ fn encrypt<R: Reader, W: Writer>(
         pass: &str,
         algo_name: &str,
         input: &mut R,
-        output: &mut W) -> Result<(), &'static str> {
+        output: &mut W) -> Result<(), ~str> {
     let default_scrypt_log_n = 14;
     let default_scrypt_r = 8;
     let default_scrypt_p = 1;
@@ -380,7 +382,7 @@ fn encrypt<R: Reader, W: Writer>(
 
     let enc_salt = os_rand(16);
     let mac_salt = os_rand(16);
-    let (enc, iv) = try!(get_encryptor(algo_name, pass, enc_salt, &scrypt_params));
+    let (enc, iv) = if_ok!(get_encryptor(algo_name, pass, enc_salt, &scrypt_params));
 
     let iv_len = match iv {
         Some(ref iv) => iv.len(),
@@ -398,35 +400,35 @@ fn encrypt<R: Reader, W: Writer>(
         // support non-utf8 algorithm names?
         let header_len = (41 + algo_name.len() + enc_salt.len() + mac_salt.len() + iv_len) as u32;
 
-        output.write_str("RUSTCRPT");
-        output.write_be_u32(1);
-        output.write_be_u32(header_len);
+        io!(output.write_str("RUSTCRPT"));
+        io!(output.write_be_u32(1));
+        io!(output.write_be_u32(header_len));
 
-        output.write_be_u32(algo_name.len() as u32);
-        output.write_str(algo_name);
+        io!(output.write_be_u32(algo_name.len() as u32));
+        io!(output.write_str(algo_name));
 
-        output.write_u8(default_scrypt_log_n);
-        output.write_be_u32(default_scrypt_r);
-        output.write_be_u32(default_scrypt_p);
+        io!(output.write_u8(default_scrypt_log_n));
+        io!(output.write_be_u32(default_scrypt_r));
+        io!(output.write_be_u32(default_scrypt_p));
 
-        output.write_be_u32(enc_salt.len() as u32);
-        output.write(enc_salt);
+        io!(output.write_be_u32(enc_salt.len() as u32));
+        io!(output.write(enc_salt));
 
-        output.write_be_u32(mac_salt.len() as u32);
-        output.write(mac_salt);
+        io!(output.write_be_u32(mac_salt.len() as u32));
+        io!(output.write(mac_salt));
 
         match iv {
             Some(ref iv) => {
-                output.write_be_u32(iv.len() as u32);
-                output.write(iv.as_slice());
+                io!(output.write_be_u32(iv.len() as u32));
+                io!(output.write(iv.as_slice()));
             }
-            None => output.write_be_u32(0)
+            None => io!(output.write_be_u32(0))
         }
 
-        try!(do_encrypt(input, &mut output, enc));
+        if_ok!(do_encrypt(input, &mut output, enc));
     }
 
-    output.write(mac.result().code());
+    io!(output.write(mac.result().code()));
 
     Ok(())
 }
@@ -434,53 +436,53 @@ fn encrypt<R: Reader, W: Writer>(
 fn decrypt<R: Reader, W: Writer>(
         pass: &str,
         input: &mut R,
-        output: &mut W) -> Result<(), &'static str> {
+        output: &mut W) -> Result<(), ~str> {
     // Read the first 3 fields of the header which are of a fixed length.
     // We have to save this data so we can pass it to the Mac function later.
     // Unfortunately, we can't pass this data to the Mac function until we've read most of the
     // header since we need to know whats in the header to construct the Mac function.
-    let header1 = input.read_bytes(16);
+    let header1 = io!(input.read_bytes(16));
 
     let mut header1_reader = BufReader::new(header1);
 
-    let magic = header1_reader.read_bytes(8);
+    let magic = io!(header1_reader.read_bytes(8));
     if magic.as_slice() != "RUSTCRPT".as_bytes() {
-        return Err("Invalid MAGIC value.");
+        return Err(~"Invalid MAGIC value.");
     }
 
-    let version = header1_reader.read_be_u32();
+    let version = io!(header1_reader.read_be_u32());
     if version != 1 {
-        return Err("Unsupported version");
+        return Err(~"Unsupported version");
     }
 
-    let header_len = header1_reader.read_be_u32();
+    let header_len = io!(header1_reader.read_be_u32());
 
     // Read the rest of the header - we still can't construct the Mac function, so we need to save
     // this part of the header for passing to the Mac later as well.
-    let header2 = input.read_bytes((header_len - 16) as uint);
+    let header2 = io!(input.read_bytes((header_len - 16) as uint));
 
     let mut header2_reader = BufReader::new(header2);
 
     // Read a length-prefixed field
-    let read_field = || -> ~[u8] {
-        let field_len = header2_reader.read_be_u32() as uint;
+    let read_field = || -> IoResult<~[u8]> {
+        let field_len = if_ok!(header2_reader.read_be_u32()) as uint;
         header2_reader.read_bytes(field_len)
     };
 
-    let algo_name = match str::from_utf8_owned(read_field()) {
+    let algo_name = match str::from_utf8_owned(io!(read_field())) {
         Some(s) => s,
-        None => return Err("Invalid algorithm name - not valid utf-8")
+        None => return Err(~"Invalid algorithm name - not valid utf-8")
     };
 
-    let scrypt_log_n = header2_reader.read_u8();
-    let scrypt_r = header2_reader.read_be_u32();
-    let scrypt_p = header2_reader.read_be_u32();
+    let scrypt_log_n = io!(header2_reader.read_u8());
+    let scrypt_r = io!(header2_reader.read_be_u32());
+    let scrypt_p = io!(header2_reader.read_be_u32());
 
     let scrypt_params = ScryptParams::new(scrypt_log_n, scrypt_r, scrypt_p);
 
-    let enc_salt = read_field();
-    let mac_salt = read_field();
-    let iv = read_field();
+    let enc_salt = io!(read_field());
+    let mac_salt = io!(read_field());
+    let iv = io!(read_field());
 
     // Its possible that there are more header fields, but we can ignore them. If for some reason we
     // can't ignore them, then the VERSION field in the header should have been incremented.
@@ -490,17 +492,17 @@ fn decrypt<R: Reader, W: Writer>(
     mac.input(header1);
     mac.input(header2);
 
-    let mut dec = try!(get_decryptor(algo_name, pass, enc_salt, &scrypt_params, iv));
+    let mut dec = if_ok!(get_decryptor(algo_name, pass, enc_salt, &scrypt_params, iv));
 
     // The return value of do_decrypt() is the Mac value saved in message we are decrypting, not the
     // calculated Mac value.
-    let mac_code = try!(do_decrypt(input, output, &mut dec, &mut mac));
+    let mac_code = if_ok!(do_decrypt(input, output, &mut dec, &mut mac));
 
     // MacResult's equals method is implemented to be a fixed time comparison
     if mac_code == mac.result() {
         Ok(())
     } else {
-        Err("Mac code not valid")
+        Err(~"Mac code not valid")
     }
 }
 
@@ -551,8 +553,8 @@ fn main() {
     }
 
     let mut input_file = match File::open(&Path::new(matches.opt_str("f").unwrap())) {
-        Some(f) => f,
-        None => {
+        Ok(f) => f,
+        Err(_) => {
             println!("Failed to open input file.");
             return;
         }
@@ -560,8 +562,8 @@ fn main() {
 
     let out_path = Path::new(matches.opt_str("o").unwrap());
     let mut output_file = match File::create(&out_path) {
-        Some(f) => f,
-        None => {
+        Ok(f) => f,
+        Err(_) => {
             println!("Failed to open output file.");
             return;
         }
@@ -574,12 +576,12 @@ fn main() {
 
     // FIXME? - print!() doesn't flush the string to STDOUT before read_line(), which seems like a
     // bug in Rust.
-    io::stdout().write(bytes!("Please type the password: "));
+    let _ = io::stdout().write(bytes!("Please type the password: "));
     let mut stdin = BufferedReader::new(io::stdin());
     // TODO - It would be better to disable echoing before doing this
     let pass = match stdin.read_line() {
-        Some(x) => x,
-        None => fail!("Couldn't read password.")
+        Ok(x) => x,
+        Err(_) => fail!("Couldn't read password.")
     };
 
     let op_result = if !matches.opt_present("d") {
@@ -591,7 +593,7 @@ fn main() {
     match op_result {
         Ok(_) => os::set_exit_status(0),
         Err(msg) => {
-            fs::unlink(&out_path);
+            let _ = fs::unlink(&out_path);
             println!("Operation failed: {}", msg)
         }
     }
@@ -627,7 +629,7 @@ mod tests {
                     Ok(_) => {},
                     Err(_) => fail!()
                 }
-                cipher_size = cipher_writer.tell() as uint;
+                cipher_size = cipher_writer.tell().unwrap() as uint;
             }
 
             {
