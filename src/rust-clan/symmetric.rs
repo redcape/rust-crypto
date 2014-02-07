@@ -598,11 +598,10 @@ impl <R: Reader> Reader for ClanReader<R> {
                             self.state = Some(AfterDataChunk(mac, dec, mr));
                             return Ok(x)
                         }
-                        Err(IoError { kind: EndOfFile, .. }) => {
+                        Err(IoError { kind: io::EndOfFile, .. }) => {
                             self.state = Some(BeforeDataChunk(mac, dec));
                         }
-                        // TODO - why is this not reachable?
-                        // Err(e) => return Err(e)
+                        Err(e) => return Err(e)
                     }
                 }
             }
