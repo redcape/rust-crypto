@@ -481,11 +481,13 @@ impl <R: Reader> Reader for ClanReader<R> {
                     // TODO - get rid of allocation here
                     let magic = if_ok!(self.reader.read_bytes(8));
                     if magic.as_slice() != "RUSTCRPT".as_bytes() {
-                        fail!("Invalid header");
+                        return io_err(~"Invalid file magic");
                     }
 
                     let mut algo_chunk: Option<SymmetricAlgoChunkInfo> = None;
 
+                    // We have to save all the data from chunks read prior to setting up the Mac
+                    // function so that they can be verified
                     let mut chunk_data_items: ~[~[u8]] = ~[];
 
                     loop {
@@ -493,7 +495,10 @@ impl <R: Reader> Reader for ClanReader<R> {
                             if_ok!(read_next_chunk_with_data(&mut self.reader));
                         chunk_data_items.push(chunk_data);
 
-                        assert!(chunk_header.chunk_pos == self.next_chunk_pos);
+                        // Must ensure that chunks haven't been re-arranged
+                        if chunk_header.chunk_pos == self.next_chunk_pos {
+                            return io_err(~"Re-arranged chunks detected");
+                        }
                         self.next_chunk_pos += 1;
 
                         match chunk {
@@ -502,7 +507,7 @@ impl <R: Reader> Reader for ClanReader<R> {
                             EncryptedDataChunk => { break; }
                             UnknownChunk => {
                                 if chunk_header.chunk_flags & MustUnderstandFlag != 0 {
-                                    fail!("Encountered unkown must-understand chunk");
+                                    return io_err(~"Unknown must-understand chunk");
                                 }
                             }
                         }
@@ -513,10 +518,12 @@ impl <R: Reader> Reader for ClanReader<R> {
                     }
 
                     // Validate that we got all the chunks we needed
-                    assert!(algo_chunk.is_some());
-                    let algo_info = algo_chunk.take_unwrap();
+                    let algo_info = match algo_chunk {
+                        Some(algo_info) => algo_info,
+                        None => return io_err(~"No algo chunk found")
+                    };
 
-                    // Construct the Mac
+                    // Construct the Kdf and Mac
                     let scrypt_params = if_ok!(get_kdf(algo_info.kdf_name));
                     let mut mac = if_ok!(get_mac(
                         algo_info.mac_name,
@@ -550,7 +557,10 @@ impl <R: Reader> Reader for ClanReader<R> {
                 BeforeDataChunk(mut mac, mut dec) => {
                     let (chunk_header, chunk) = if_ok!(read_next_chunk(&mut self.reader));
 
-                    assert!(chunk_header.chunk_pos == self.next_chunk_pos);
+                    // Must ensure that chunks haven't been re-arranged
+                    if chunk_header.chunk_pos == self.next_chunk_pos {
+                            return io_err(~"Re-arranged chunks detected");
+                    }
                     self.next_chunk_pos += 1;
 
                     // TODO - avoid allocation!
@@ -590,10 +600,7 @@ impl <R: Reader> Reader for ClanReader<R> {
                     self.state = Some(AfterDataChunk(mac, dec, MemReader::new(mw.unwrap())));
                 }
                 AfterDataChunk(mac, dec, mut mr) => {
-                    use std::io::File;
-                    use std::path::Path;
-                    let mut f = File::open(&Path::new("/"));
-                    match f.read(buf) {
+                    match mr.read(buf) {
                         Ok(x) => {
                             self.state = Some(AfterDataChunk(mac, dec, mr));
                             return Ok(x)
@@ -615,6 +622,7 @@ impl <R: Reader> Reader for ClanReader<R> {
 // TOOD - Handle PlainDataChunk as part of decryption
 // TODO - Make KDFs into a trait!
 // TODO - reduces copies during decryption - decrypt directly into the result buffer!
+// TODO - Add limits to chunk sizes read - prevent DOS attacks!
 
 /*
 pub struct ClanWriter<W, M, D> {
