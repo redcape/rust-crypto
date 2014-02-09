@@ -46,6 +46,22 @@ pub trait Mac {
     fn output_bytes(&self) -> uint;
 }
 
+impl Mac for ~Mac {
+    fn input(&mut self, data: &[u8]) { self.input(data) }
+    fn reset(&mut self) { self.reset() }
+    fn result(&mut self) -> MacResult { self.result() }
+    fn raw_result(&mut self, output: &mut [u8]) { self.raw_result(output) }
+    fn output_bytes(&self) -> uint { self.output_bytes() }
+}
+
+impl <'a> Mac for &'a mut Mac {
+    fn input(&mut self, data: &[u8]) { self.input(data) }
+    fn reset(&mut self) { self.reset() }
+    fn result(&mut self) -> MacResult { self.result() }
+    fn raw_result(&mut self, output: &mut [u8]) { self.raw_result(output) }
+    fn output_bytes(&self) -> uint { self.output_bytes() }
+}
+
 /**
  * A MacResult wraps a Mac code and provides a safe Eq implementation that runs in fixed time.
  */
