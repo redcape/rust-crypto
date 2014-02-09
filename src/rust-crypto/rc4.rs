@@ -40,6 +40,12 @@ impl Rc4 {
         let k = self.state[(self.state[self.i] + self.state[self.j]) as uint];
         return k;
     }
+    fn do_reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        match iv.len() {
+            0 => Ok(()),
+            _ => Err(())
+        }
+    }
 }
 
 impl SynchronousStreamCipher for Rc4 {
@@ -49,6 +55,9 @@ impl SynchronousStreamCipher for Rc4 {
             *y = *x ^ self.next();
         }
     }
+    fn reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        self.do_reset(iv)
+    }
 }
 
 impl Encryptor for Rc4 {
@@ -56,12 +65,18 @@ impl Encryptor for Rc4 {
             -> Result<BufferResult, SymmetricCipherError> {
         symm_enc_or_dec(self, input, output)
     }
+    fn reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        self.do_reset(iv)
+    }
 }
 
 impl Decryptor for Rc4 {
     fn decrypt(&mut self, input: &mut RefReadBuffer, output: &mut RefWriteBuffer, _: bool)
             -> Result<BufferResult, SymmetricCipherError> {
         symm_enc_or_dec(self, input, output)
+    }
+    fn reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        self.do_reset(iv)
     }
 }
 

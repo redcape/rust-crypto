@@ -24,6 +24,9 @@ trait BlockProcessor {
     /// Process a block of data. The in_hist and out_hist parameters represent the input and output
     /// when the last block was processed. These values are necessary for certain modes.
     fn process_block(&mut self, in_hist: &[u8], out_hist: &[u8], input: &[u8], output: &mut [u8]);
+
+    /// Get the block size
+    fn block_size(&self) -> uint;
 }
 
 /// A PaddingProcessor handles adding or removing padding
@@ -387,6 +390,7 @@ impl <P: BlockProcessor, X: PaddingProcessor> BlockEngine<P, X> {
             }
         }
     }
+    fn block_size(&self) -> uint { self.processor.block_size() }
     fn reset(&mut self) {
         self.state = FastMode;
         self.in_scratch.reset();
@@ -491,6 +495,7 @@ impl <T: BlockEncryptor> BlockProcessor for EcbEncryptorProcessor<T> {
     fn process_block(&mut self, _: &[u8], _: &[u8], input: &[u8], output: &mut [u8]) {
         self.algo.encrypt_block(input, output);
     }
+    fn block_size(&self) -> uint { self.algo.block_size() }
 }
 
 /// ECB Encryption mode
@@ -509,15 +514,20 @@ impl <T: BlockEncryptor, X: PaddingProcessor> EcbEncryptor<T, X> {
             block_engine: BlockEngine::new(processor, EncPadding::wrap(padding), block_size)
         }
     }
-    pub fn reset(&mut self) {
-        self.block_engine.reset();
-    }
 }
 
 impl <T: BlockEncryptor, X: PaddingProcessor> Encryptor for EcbEncryptor<T, X> {
     fn encrypt(&mut self, input: &mut RefReadBuffer, output: &mut RefWriteBuffer, eof: bool)
             -> Result<BufferResult, SymmetricCipherError> {
         self.block_engine.process(input, output, eof)
+    }
+    fn reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        if iv.len() == 0 {
+            self.block_engine.reset();
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -529,6 +539,7 @@ impl <T: BlockDecryptor> BlockProcessor for EcbDecryptorProcessor<T> {
     fn process_block(&mut self, _: &[u8], _: &[u8], input: &[u8], output: &mut [u8]) {
         self.algo.decrypt_block(input, output);
     }
+    fn block_size(&self) -> uint { self.algo.block_size() }
 }
 
 /// ECB Decryption mode
@@ -547,15 +558,20 @@ impl <T: BlockDecryptor, X: PaddingProcessor> EcbDecryptor<T, X> {
             block_engine: BlockEngine::new(processor, DecPadding::wrap(padding), block_size)
         }
     }
-    pub fn reset(&mut self) {
-        self.block_engine.reset();
-    }
 }
 
 impl <T: BlockDecryptor, X: PaddingProcessor> Decryptor for EcbDecryptor<T, X> {
     fn decrypt(&mut self, input: &mut RefReadBuffer, output: &mut RefWriteBuffer, eof: bool)
             -> Result<BufferResult, SymmetricCipherError> {
         self.block_engine.process(input, output, eof)
+    }
+    fn reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        if iv.len() == 0 {
+            self.block_engine.reset();
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -571,6 +587,7 @@ impl <T: BlockEncryptor> BlockProcessor for CbcEncryptorProcessor<T> {
         }
         self.algo.encrypt_block(self.temp, output);
     }
+    fn block_size(&self) -> uint { self.algo.block_size() }
 }
 
 /// CBC encryption mode
@@ -595,15 +612,20 @@ impl <T: BlockEncryptor, X: PaddingProcessor> CbcEncryptor<T, X> {
                 iv)
         }
     }
-    pub fn reset(&mut self, iv: &[u8]) {
-        self.block_engine.reset_with_history(&[], iv);
-    }
 }
 
 impl <T: BlockEncryptor, X: PaddingProcessor> Encryptor for CbcEncryptor<T, X> {
     fn encrypt(&mut self, input: &mut RefReadBuffer, output: &mut RefWriteBuffer, eof: bool)
             -> Result<BufferResult, SymmetricCipherError> {
         self.block_engine.process(input, output, eof)
+    }
+    fn reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        if iv.len() == self.block_engine.block_size() {
+            self.block_engine.reset_with_history(&[], iv);
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -619,6 +641,7 @@ impl <T: BlockDecryptor> BlockProcessor for CbcDecryptorProcessor<T> {
             *o = x ^ y;
         }
     }
+    fn block_size(&self) -> uint { self.algo.block_size() }
 }
 
 /// CBC decryption mode
@@ -643,15 +666,20 @@ impl <T: BlockDecryptor, X: PaddingProcessor> CbcDecryptor<T, X> {
                 ~[])
         }
     }
-    pub fn reset(&mut self, iv: &[u8]) {
-        self.block_engine.reset_with_history(iv, &[]);
-    }
 }
 
 impl <T: BlockDecryptor, X: PaddingProcessor> Decryptor for CbcDecryptor<T, X> {
     fn decrypt(&mut self, input: &mut RefReadBuffer, output: &mut RefWriteBuffer, eof: bool)
             -> Result<BufferResult, SymmetricCipherError> {
         self.block_engine.process(input, output, eof)
+    }
+    fn reset(&mut self, iv: &[u8]) -> Result<(), ()> {
+        if iv.len() == self.block_engine.block_size() {
+            self.block_engine.reset_with_history(&[], iv);
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }
 
@@ -683,10 +711,6 @@ impl <A: BlockEncryptor> CtrMode<A> {
             bytes: OwnedReadBuffer::new_with_len(vec::from_elem(block_size, 0u8), 0)
         }
     }
-    pub fn reset(&mut self, ctr: &[u8]) {
-        vec::bytes::copy_memory(self.ctr, ctr);
-        self.bytes.reset();
-    }
     fn process(&mut self, input: &[u8], output: &mut [u8]) {
         assert!(input.len() == output.len());
         let len = input.len();
@@ -707,11 +731,23 @@ impl <A: BlockEncryptor> CtrMode<A> {
             i += count;
         }
     }
+    fn do_reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        if ctr.len() == self.algo.block_size() {
+            vec::bytes::copy_memory(self.ctr, ctr);
+            self.bytes.reset();
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
 }
 
 impl <A: BlockEncryptor> SynchronousStreamCipher for CtrMode<A> {
     fn process(&mut self, input: &[u8], output: &mut [u8]) {
         self.process(input, output);
+    }
+    fn reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        self.do_reset(ctr)
     }
 }
 
@@ -720,12 +756,18 @@ impl <A: BlockEncryptor> Encryptor for CtrMode<A> {
             -> Result<BufferResult, SymmetricCipherError> {
         symm_enc_or_dec(self, input, output)
     }
+    fn reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        self.do_reset(ctr)
+    }
 }
 
 impl <A: BlockEncryptor> Decryptor for CtrMode<A> {
     fn decrypt(&mut self, input: &mut RefReadBuffer, output: &mut RefWriteBuffer, _: bool)
             -> Result<BufferResult, SymmetricCipherError> {
         symm_enc_or_dec(self, input, output)
+    }
+    fn reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        self.do_reset(ctr)
     }
 }
 
@@ -755,10 +797,6 @@ impl <A: BlockEncryptorX8> CtrModeX8<A> {
             bytes: OwnedReadBuffer::new_with_len(vec::from_elem(block_size * 8, 0u8), 0)
         }
     }
-    pub fn reset(&mut self, ctr: &[u8]) {
-        construct_ctr_x8(ctr, self.ctr_x8);
-        self.bytes.reset();
-    }
     fn process(&mut self, input: &[u8], output: &mut [u8]) {
         // TODO - Can some of this be combined with regular CtrMode?
         assert!(input.len() == output.len());
@@ -782,11 +820,23 @@ impl <A: BlockEncryptorX8> CtrModeX8<A> {
             i += count;
         }
     }
+    fn do_reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        if ctr.len() == self.algo.block_size() {
+            construct_ctr_x8(ctr, self.ctr_x8);
+            self.bytes.reset();
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
 }
 
 impl <A: BlockEncryptorX8> SynchronousStreamCipher for CtrModeX8<A> {
     fn process(&mut self, input: &[u8], output: &mut [u8]) {
         self.process(input, output);
+    }
+    fn reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        self.do_reset(ctr)
     }
 }
 
@@ -795,12 +845,18 @@ impl <A: BlockEncryptorX8> Encryptor for CtrModeX8<A> {
             -> Result<BufferResult, SymmetricCipherError> {
         symm_enc_or_dec(self, input, output)
     }
+    fn reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        self.do_reset(ctr)
+    }
 }
 
 impl <A: BlockEncryptorX8> Decryptor for CtrModeX8<A> {
     fn decrypt(&mut self, input: &mut RefReadBuffer, output: &mut RefWriteBuffer, _: bool)
             -> Result<BufferResult, SymmetricCipherError> {
         symm_enc_or_dec(self, input, output)
+    }
+    fn reset(&mut self, ctr: &[u8]) -> Result<(), ()> {
+        self.do_reset(ctr)
     }
 }
 
