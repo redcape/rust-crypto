@@ -21,6 +21,7 @@ pub mod buffer;
 mod cryptoutil;
 pub mod digest;
 pub mod hmac;
+pub mod ioutil;
 pub mod mac;
 pub mod md5;
 pub mod pbkdf2;
